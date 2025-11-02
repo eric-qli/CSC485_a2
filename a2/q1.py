@@ -467,7 +467,7 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
 if __name__ == '__main__':
     np.random.seed(1234)
     eval_data = load_eval()
-    # for wsd_func in [mfs, lesk, lesk_ext, lesk_cos, lesk_cos_onesided]:
-    #     evaluate(eval_data, wsd_func)
+    for wsd_func in [mfs, lesk, lesk_ext, lesk_cos, lesk_cos_onesided]:
+        evaluate(eval_data, wsd_func)
 
     evaluate(eval_data, lesk_w2v, *load_word2vec())
