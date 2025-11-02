@@ -421,22 +421,25 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
         sig_vecs = [vectors[vocab[w]] for w in signature if w in vocab]
         ctx_vecs = [vectors[vocab[w]] for w in context if w in vocab]
 
+        if not sig_vecs or not ctx_vecs:
+            continue
 
         signature_vec = np.mean(sig_vecs, axis=0)
         context_vec = np.mean(ctx_vecs, axis=0)
-         
+
         dot = np.dot(signature_vec, context_vec)
         sign_norm = np.linalg.norm(signature_vec)
         context_norm = np.linalg.norm(context_vec)
-
         denominator = sign_norm * context_norm
+
         if denominator == 0:
-            score = 0
+            score = 0.0
         else:
-            score = dot / (sign_norm * context_norm)
-            if score > best_score:
-                best_score = score
-                best_sense = sense
+            score = float(dot / denominator)
+
+        if score > best_score:
+            best_score = score
+            best_sense = sense
 
     return best_sense
 
