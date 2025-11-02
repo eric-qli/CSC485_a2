@@ -218,10 +218,14 @@ def lesk_cos(sent: Sequence[WSDToken], target_index: int) -> Synset:
         sign_norm = np.linalg.norm(signature_vec)
         context_norm = np.linalg.norm(context_vec)
 
-        score = dot / (sign_norm * context_norm)
-        if score > best_score:
-            best_score = score
-            best_sense = sense
+        denominator = sign_norm * context_norm
+        if denominator == 0:
+            score = 0
+        else:
+            score = dot / (sign_norm * context_norm)
+            if score > best_score:
+                best_score = score
+                best_sense = sense
 
     return best_sense
 
@@ -297,10 +301,14 @@ def lesk_cos_onesided(sent: Sequence[WSDToken], target_index: int) -> Synset:
         sign_norm = np.linalg.norm(signature_vec)
         context_norm = np.linalg.norm(context_vec)
 
-        score = dot / (sign_norm * context_norm)
-        if score > best_score:
-            best_score = score
-            best_sense = sense
+        denominator = sign_norm * context_norm
+        if denominator == 0:
+            score = 0
+        else:
+            score = dot / (sign_norm * context_norm)
+            if score > best_score:
+                best_score = score
+                best_sense = sense
 
     return best_sense
 
@@ -416,10 +424,14 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
         sign_norm = np.linalg.norm(signature_vec)
         context_norm = np.linalg.norm(context_vec)
 
-        score = dot / (sign_norm * context_norm)
-        if score > best_score:
-            best_score = score
-            best_sense = sense
+        denominator = sign_norm * context_norm
+        if denominator == 0:
+            score = 0
+        else:
+            score = dot / (sign_norm * context_norm)
+            if score > best_score:
+                best_score = score
+                best_sense = sense
 
     return best_sense
 
