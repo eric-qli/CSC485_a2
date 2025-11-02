@@ -110,21 +110,19 @@ def gather_sense_vectors(corpus: T.List[T.List[WSDToken]],
     """
     sense_vecs = defaultdict(list)
     corpus = sorted(corpus, key=len)
+    print('Gathering sense vectors...')
     for batch_n in trange(0, len(corpus), bs, desc='gathering',
                           leave=False):
         batch = corpus[batch_n:batch_n + bs]
 
-        print('in line 120')
         batch_char = [[token.lemma for token in sentence]
                       for sentence in batch]
 
         embeddings, offset_mappings = run_bert(batch_char)
-        print('in line 122')
 
         B, T, H = embeddings.shape
 
         for index, (original, offset) in enumerate(zip(batch, offset_mappings)):
-            print('in line 127')
             word_vector = []
             curr_sentence = []
 
@@ -161,6 +159,8 @@ def gather_sense_vectors(corpus: T.List[T.List[WSDToken]],
                 for synset in token.synsets:
                     sense_vecs[synset].append(token_vec.detach())
 
+    print('finished')
+    
     result = {}
     for sid, vec_list in sense_vecs.items():
         result[sid] = torch.stack(vec_list, dim=0).mean(0)
