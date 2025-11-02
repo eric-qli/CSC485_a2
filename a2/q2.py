@@ -110,7 +110,6 @@ def gather_sense_vectors(corpus: T.List[T.List[WSDToken]],
     """
     sense_vecs = defaultdict(list)
     corpus = sorted(corpus, key=len)
-    print('Gathering sense vectors...')
     for batch_n in trange(0, len(corpus), bs, desc='gathering',
                           leave=False):
         batch = corpus[batch_n:batch_n + bs]
@@ -198,8 +197,83 @@ def bert_1nn(batch: T.List[T.List[WSDToken]],
     Returns:
         pred: The predictions of the correct sense for the given words.
     """
-    ### YOUR CODE STARTS HERE
-    raise NotImplementedError
+    batch_token = [[token.lemma for token in sentence]
+                   for sentence in batch]
+    
+    embeddings, offset_mappings = run_bert(batch_token)
+
+    B, T, H = embeddings.shape
+
+    pred = []
+
+    for index, (original, offset, target_index) in enumerate(zip(batch, offset_mappings, indices)):
+        word_vector = []
+        curr_sentence = []
+
+        for word_index, (x, y) in enumerate(offset):
+            if x == 0 and y == 0:
+                continue
+
+            curr_word = embeddings[index][word_index]
+
+            # new word
+            if x == 0:
+                if word_vector:
+                    curr_sentence.append(torch.mean(torch.stack(word_vector), dim=0))
+                    word_vector = []
+                word_vector.append(curr_word)
+            else:
+                word_vector.append(curr_word)
+
+        if word_vector:
+            curr_sentence.append(torch.mean(torch.stack(word_vector), dim=0))
+
+        length_token = min(len(original), len(curr_sentence))
+
+        preds = []
+
+        for idx in target_index:
+            if idx >= length_token:
+                preds.append(mfs(original, idx))
+                continue
+
+            tok = original[idx]
+            tok_vec = curr_sentence[idx].detach()
+
+            synset = tok.synsets
+
+            if synset is None:
+                preds.append(mfs(original, idx))
+                continue
+
+            if len(synset) == 0:
+                preds.append(mfs(original, idx))
+                continue
+
+            # candaidate matrix
+            S_list, V_list = [], []
+            for syn in synset:
+                if syn in sense_vecs:
+                    S_list.append(sense_vecs[syn])
+                    V_list.append(tok_vec)
+
+            if not S_list:
+                preds.append(mfs(original, idx))
+                continue
+
+            S = torch.stack(S_list, dim=0)          # [k, H]
+            t = tok_vec.unsqueeze(0)                # [1, H]
+
+            # Cosine via normalization + matmul (no loops)
+            S = S / (S.norm(dim=1, keepdim=True) + 1e-12)
+            t = t / (t.norm(dim=1, keepdim=True) + 1e-12)
+            scores = S @ t.T                         # [k, 1]
+            best = torch.argmax(scores, dim=0).item()
+            preds.append(V_list[best])
+
+        preds.append(preds)
+
+    return preds
 
 
 if __name__ == '__main__':
