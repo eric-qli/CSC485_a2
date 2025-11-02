@@ -266,11 +266,9 @@ def bert_1nn(batch: T.List[T.List[WSDToken]],
             best = torch.argmax(scores, dim=0).item()
             preds.append(V_list[best])
 
-        preds.append(preds)
+        pred.append(preds)
 
-    print(preds)
-
-    return preds
+    return pred
 
 
 if __name__ == '__main__':
