@@ -68,7 +68,7 @@ def lesk(sent: Sequence[WSDToken], target_index: int) -> Synset:
     """
     best_sense = mfs(sent, target_index)
     best_score = 0
-    context = set([tok.lemma for tok in sent])
+    # context = set([tok.lemma for tok in sent])
 
     all_sense = wn.synsets(sent[target_index].lemma)
 
@@ -103,7 +103,7 @@ def lesk_ext(sent: Sequence[WSDToken], target_index: int) -> Synset:
     """
     best_sense = mfs(sent, target_index)
     best_score = 0
-    context = set([tok.lemma for tok in sent])
+    # context = set([tok.lemma for tok in sent])
 
     all_sense = wn.synsets(sent[target_index].lemma)
 
@@ -167,7 +167,7 @@ def lesk_cos(sent: Sequence[WSDToken], target_index: int) -> Synset:
     """
     best_sense = mfs(sent, target_index)
     best_score = 0
-    context = set([tok.lemma for tok in sent])
+    # context = set([tok.lemma for tok in sent])
 
     all_sense = wn.synsets(sent[target_index].lemma)
 
@@ -248,7 +248,7 @@ def lesk_cos_onesided(sent: Sequence[WSDToken], target_index: int) -> Synset:
     """
     best_sense = mfs(sent, target_index)
     best_score = 0
-    context = set([tok.lemma for tok in sent])
+    # context = set([tok.lemma for tok in sent])
 
     all_sense = wn.synsets(sent[target_index].lemma)
 
@@ -365,7 +365,7 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
     """
     best_sense = mfs(sent, target_index)
     best_score = 0
-    context = set([tok.lemma for tok in sent])
+    # context = set([tok.lemma for tok in sent])
 
     all_sense = wn.synsets(sent[target_index].lemma)
 
