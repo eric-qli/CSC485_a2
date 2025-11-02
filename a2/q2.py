@@ -156,11 +156,10 @@ def gather_sense_vectors(corpus: T.List[T.List[WSDToken]],
                     continue
 
                 for synset in token.synsets:
-                    sense_vecs[synset].append(token_vec.detach())
+                    sense_vecs[synset.name()].append(token_vec.detach())
 
-    result = {}
-    for sid, vec_list in sense_vecs.items():
-        result[sid] = torch.stack(vec_list, dim=0).mean(0)
+    result = {sid: torch.stack(vec_list, dim=0).mean(0)
+          for sid, vec_list in sense_vecs.items()}
 
     return result
 
@@ -252,27 +251,31 @@ def bert_1nn(batch: T.List[T.List[WSDToken]],
             if not synset:
                 preds.append(mfs(original, idx))
                 continue
+            
+            candidates = wn.synsets(tok.lemma)  # or wn.synsets(tok.lemma, pos=tok.pos)
+            if not candidates:
+                preds.append(mfs(original, idx))
+                continue
 
-            # candaidate matrix
             S_list, kept_syns = [], []
             device = embeddings.device
 
-            for syn in synset:
-                sid = sense_id(syn) 
+            for syn in candidates:
+                sid = syn.name()                 # str id
                 vec = sense_vecs.get(sid)
                 if vec is None:
                     continue
                 if vec.device != device:
                     vec = vec.to(device)
-                S_list.append(vec) 
-                kept_syns.append(as_synset(sid))
+                S_list.append(vec)
+                kept_syns.append(syn)            # return Synset object
 
             if not S_list:
                 preds.append(mfs(original, idx))
                 continue
 
             S = torch.stack(S_list, dim=0)
-            t = tok_vec.unsqueeze(0) 
+            t = tok_vec.unsqueeze(0)
             S = S / (S.norm(dim=1, keepdim=True) + 1e-12)
             t = t / (t.norm(dim=1, keepdim=True) + 1e-12)
             scores = S @ t.T
@@ -280,8 +283,6 @@ def bert_1nn(batch: T.List[T.List[WSDToken]],
             preds.append(kept_syns[best])
 
         pred.append(preds)
-
-    print(pred)
 
     return pred
 
