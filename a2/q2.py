@@ -268,6 +268,8 @@ def bert_1nn(batch: T.List[T.List[WSDToken]],
 
         preds.append(preds)
 
+    print(preds)
+
     return preds
 
 
