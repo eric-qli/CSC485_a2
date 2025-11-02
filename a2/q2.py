@@ -114,14 +114,17 @@ def gather_sense_vectors(corpus: T.List[T.List[WSDToken]],
                           leave=False):
         batch = corpus[batch_n:batch_n + bs]
 
+        print('in line 120')
         batch_char = [[token.lemma for token in sentence]
                       for sentence in batch]
 
         embeddings, offset_mappings = run_bert(batch_char)
+        print('in line 122')
 
         B, T, H = embeddings.shape
 
         for index, (original, offset) in enumerate(zip(batch, offset_mappings)):
+            print('in line 127')
             word_vector = []
             curr_sentence = []
 
