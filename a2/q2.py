@@ -159,13 +159,9 @@ def gather_sense_vectors(corpus: T.List[T.List[WSDToken]],
                 for synset in token.synsets:
                     sense_vecs[synset].append(token_vec.detach())
 
-    print('finished')
-
     result = {}
     for sid, vec_list in sense_vecs.items():
         result[sid] = torch.stack(vec_list, dim=0).mean(0)
-
-    print(result)
 
     return result
 
