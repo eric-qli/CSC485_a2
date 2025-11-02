@@ -75,7 +75,8 @@ def lesk(sent: Sequence[WSDToken], target_index: int) -> Synset:
     for sense in all_sense:
         text = sense.definition() + " " + " ".join(sense.examples())
         signature = set(stop_tokenize(text))
-        context = set(stop_tokenize(context))
+        context = set(stop_tokenize(" ".join(
+        tok.word for i, tok in enumerate(sent) if i != target_index)))
 
         score = len(signature.intersection(context))
         if score > best_score:
@@ -139,7 +140,8 @@ def lesk_ext(sent: Sequence[WSDToken], target_index: int) -> Synset:
             text += " " + " ".join(r.examples())
         
         signature = set(stop_tokenize(text))
-        context = set(stop_tokenize(context))
+        context = set(stop_tokenize(" ".join(
+        tok.word for i, tok in enumerate(sent) if i != target_index)))
 
         score = len(signature.intersection(context))
         if score > best_score:
@@ -203,7 +205,8 @@ def lesk_cos(sent: Sequence[WSDToken], target_index: int) -> Synset:
             text += " " + " ".join(r.examples())
         
         signature = set(stop_tokenize(text))
-        context = set(stop_tokenize(context))
+        context = set(stop_tokenize(" ".join(
+        tok.word for i, tok in enumerate(sent) if i != target_index)))
 
         all_unique = signature.union(context)
         unique_length = len(all_unique)
@@ -284,7 +287,8 @@ def lesk_cos_onesided(sent: Sequence[WSDToken], target_index: int) -> Synset:
             text += " " + " ".join(r.examples())
         
         signature = set(stop_tokenize(text))
-        context = set(stop_tokenize(context))
+        context = set(stop_tokenize(" ".join(
+        tok.word for i, tok in enumerate(sent) if i != target_index)))
 
         signature = set([w for w in signature if w in context])
 
@@ -401,7 +405,8 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
             text += " " + " ".join(r.examples())
         
         signature = set(stop_tokenize(text))
-        context = set(stop_tokenize(context))
+        context = set(stop_tokenize(" ".join(
+        tok.word for i, tok in enumerate(sent) if i != target_index)))
 
         signature = set([w for w in signature if w in context])
 
