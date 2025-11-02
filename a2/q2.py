@@ -113,8 +113,56 @@ def gather_sense_vectors(corpus: T.List[T.List[WSDToken]],
     for batch_n in trange(0, len(corpus), bs, desc='gathering',
                           leave=False):
         batch = corpus[batch_n:batch_n + bs]
-        ### YOUR CODE STARTS HERE
-        raise NotImplementedError
+
+        batch_char = [[token.lemma for token in sentence]
+                      for sentence in batch]
+
+        embeddings, offset_mappings = run_bert(batch_char)
+
+        B, T, H = embeddings.shape
+
+        for index, (original, offset) in enumerate(zip(batch, offset_mappings)):
+            word_vector = []
+            curr_sentence = []
+
+            for word_index, (x, y) in enumerate(offset):
+                if x == 0 and y == 0:
+                    continue
+
+                curr_word = embeddings[index][word_index]
+
+                # new word
+                if x == 0:
+                    if word_vector:
+                        curr_sentence.append(torch.mean(torch.stack(word_vector), dim=0))
+                        word_vector = []
+                    word_vector.append(curr_word)
+                else:
+                    word_vector.append(curr_word)
+
+            if word_vector:
+                curr_sentence.append(torch.mean(torch.stack(word_vector), dim=0))
+
+            length_token = min(len(original), len(curr_sentence))
+
+            for i in range(length_token):
+                token = original[i]
+                token_vec = curr_sentence[i]
+
+                if token.synsets is None:
+                    continue
+
+                if len(token.synsets) == 0:
+                    continue
+
+                for synset in token.synsets:
+                    sense_vecs[synset].append(token_vec.detach())
+
+    result = {}
+    for sid, vec_list in sense_vecs.items():
+        result[sid] = torch.stack(vec_list, dim=0).mean(0)
+
+    return result
 
 
 def bert_1nn(batch: T.List[T.List[WSDToken]],
