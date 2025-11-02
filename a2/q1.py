@@ -367,11 +367,47 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
     Returns:
         Synset: The prediction of the correct sense for the given word.
     """
+
+    def w2v_one(s: str, vocab: Mapping[str, int], W: np.ndarray) -> np.ndarray:
+        if s in vocab:
+            return W[vocab[s]]
+        s_low = s.lower()
+        if s_low in vocab:
+            return W[vocab[s_low]]
+        return np.zeros(W.shape[1], dtype=W.dtype)
+
+    def w2v_string(s: str, vocab: Mapping[str, int], W: np.ndarray) -> np.ndarray:
+        if " " not in s:
+            return w2v_one(s, vocab, W)
+
+        with_us = s.replace(" ", "_")
+        if with_us in vocab:
+            return W[vocab[with_us]]
+        if with_us.lower() in vocab:
+            return W[vocab[with_us.lower()]]
+
+        parts = [w for w in s.split() if w]
+        if not parts:
+            return np.zeros(W.shape[1], dtype=W.dtype)
+        vecs = [w2v_one(w, vocab, W) for w in parts]
+        return np.mean(vecs, axis=0)
+    
+
     best_sense = mfs(sent, target_index)
     best_score = 0
     # context = set([tok.lemma for tok in sent])
 
     all_sense = wn.synsets(sent[target_index].lemma)
+    context = set(stop_tokenize(" ".join(
+    tok.lemma for i, tok in enumerate(sent) if i != target_index)))
+
+    ctx_vecs = [w2v_string(w, vocab, word2vec) for w in context]
+    if len(ctx_vecs) == 0:
+        return best_sense
+    ctx_vec = np.mean(ctx_vecs, axis=0)
+    ctx_norm = np.linalg.norm(ctx_vec)
+
+    lemma = sent[target_index].lemma  # lookup synsets by lemma
 
     for sense in all_sense:
         text = sense.definition() + " " + " ".join(sense.examples())
@@ -403,45 +439,29 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
         for r in sense.substance_meronyms():
             text += " " + r.definition()
             text += " " + " ".join(r.examples())
-        
-        signature = set(stop_tokenize(text))
-        context = set(stop_tokenize(" ".join(
-        tok.lemma for i, tok in enumerate(sent) if i != target_index)))
 
-        signature = set([w for w in signature if w in context])
-
-        all_unique = signature.union(context)
-        unique_length = len(all_unique)
-
-        signature_count  = Counter(signature)
-        context_count = Counter(context)
-
-        vocab, vectors = load_word2vec()
-    
-        sig_vecs = [vectors[vocab[w]] for w in signature if w in vocab]
-        ctx_vecs = [vectors[vocab[w]] for w in context if w in vocab]
-
-        if not sig_vecs or not ctx_vecs:
+        sig_tokens = stop_tokenize(" ".join(text))
+        if not sig_tokens:
             continue
 
-        signature_vec = np.mean(sig_vecs, axis=0)
-        context_vec = np.mean(ctx_vecs, axis=0)
+        sig_vecs = [w2v_string(w, vocab, word2vec) for w in sig_tokens]
+        if not sig_vecs:
+            continue
+        sig_vec = np.mean(sig_vecs, axis=0)
+        sig_norm = np.linalg.norm(sig_vec)
 
-        dot = np.dot(signature_vec, context_vec)
-        sign_norm = np.linalg.norm(signature_vec)
-        context_norm = np.linalg.norm(context_vec)
-        denominator = sign_norm * context_norm
-
-        if denominator == 0:
+        denom = sig_norm * ctx_norm
+        if denom == 0.0:
             score = 0.0
         else:
-            score = float(dot / denominator)
+            score = float(np.dot(sig_vec, ctx_vec) / denom)
 
         if score > best_score:
             best_score = score
             best_sense = sense
 
     return best_sense
+
 
 
 if __name__ == '__main__':
