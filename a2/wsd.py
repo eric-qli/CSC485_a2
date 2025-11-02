@@ -35,8 +35,8 @@ from transformers import logging as hftf_log
 hftf_log.set_verbosity_error()
 
 # set PUB_DIR to None in order to run this outside of teach.cs
-# PUB_DIR = Path('/u/csc485h/fall/pub/a2')
-PUB_DIR = None
+PUB_DIR = Path('/u/csc485h/fall/pub/a2')
+# PUB_DIR = None
 
 
 @dataclass
