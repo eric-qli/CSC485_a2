@@ -247,7 +247,7 @@ def bert_1nn(batch: T.List[T.List[WSDToken]],
             tok = original[idx]
             tok_vec = curr_sentence[idx].detach()
 
-            synset = tok.synsets
+            synset = wn.synsets(tok.lemma)
 
             if not synset:
                 preds.append(mfs(original, idx))
