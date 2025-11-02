@@ -197,6 +197,13 @@ def bert_1nn(batch: T.List[T.List[WSDToken]],
     Returns:
         pred: The predictions of the correct sense for the given words.
     """
+
+    def sense_id(s):
+        return s if isinstance(s, str) else s.name()
+
+    def as_synset(s):
+        return s if hasattr(s, "name") else wn.synset(s)
+    
     batch_token = [[token.lemma for token in sentence]
                    for sentence in batch]
     
@@ -247,24 +254,30 @@ def bert_1nn(batch: T.List[T.List[WSDToken]],
                 continue
 
             # candaidate matrix
-            S_list, V_list = [], []
+            S_list, kept_syns = [], []
+            device = embeddings.device
+
             for syn in synset:
-                if syn in sense_vecs:
-                    S_list.append(sense_vecs.get(syn))
-                    V_list.append(syn)
+                sid = sense_id(syn) 
+                vec = sense_vecs.get(sid)
+                if vec is None:
+                    continue
+                if vec.device != device:
+                    vec = vec.to(device)
+                S_list.append(vec) 
+                kept_syns.append(as_synset(sid))
 
             if not S_list:
                 preds.append(mfs(original, idx))
                 continue
 
             S = torch.stack(S_list, dim=0)
-            t = tok_vec.unsqueeze(0)
-
+            t = tok_vec.unsqueeze(0) 
             S = S / (S.norm(dim=1, keepdim=True) + 1e-12)
             t = t / (t.norm(dim=1, keepdim=True) + 1e-12)
             scores = S @ t.T
-            best = torch.argmax(scores, dim=0).item()
-            preds.append(V_list[best])
+            best = int(torch.argmax(scores, dim=0))
+            preds.append(kept_syns[best])
 
         pred.append(preds)
 
