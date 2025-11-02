@@ -128,6 +128,7 @@ def batch_evaluate(corpus: T.Iterable[T.Collection[WSDToken]],
 
             total += sum(map(len, idxs))
             preds = wsd_func(batch, idxs, *func_args, **func_kwargs)
+            print(preds)
             correct += sum(sum(pred.name() in sent[w_idx].synsets
                                for pred, w_idx in zip(s_pred, s_idx))
                            for s_pred, sent, s_idx in zip(preds, batch, idxs))
