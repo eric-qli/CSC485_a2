@@ -401,7 +401,7 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
         if not parts:
             return np.zeros(D, dtype=word2vec.dtype)
         vecs = [w2v_one(p) for p in parts]
-        # keep only non-zero rows
+
         nz = [v for v in vecs if v.any()]
         return np.mean(nz, axis=0) if nz else np.zeros(D, dtype=word2vec.dtype)
 
@@ -413,39 +413,34 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
         nz = [v for v in vecs if v.any()]
         return np.mean(nz, axis=0) if nz else np.zeros(D, dtype=word2vec.dtype)
 
-    # --- build context (all other lemmas), count each once
-    ctx_tokens = set(stop_tokenize(" ".join(tok.lemma for i, tok in enumerate(sent)
+    context_tokens = set(stop_tokenize(" ".join(tok.lemma for i, tok in enumerate(sent)
                                             if i != target_index)))
-    ctx_vec = mean_vec(ctx_tokens)
-    ctx_norm = float(np.linalg.norm(ctx_vec))
+    context_vec = mean_vec(context_tokens)
+    context_norm = float(np.linalg.norm(context_vec))
 
-    # if no signal in context, fall back to MFS
     best_sense = mfs(sent, target_index)
-    best_score = -1.0  # allow zero to win if any sense has signal
-    if ctx_norm < eps:
+    best_score = -1.0 
+    if context_norm < eps:
         return best_sense
 
-    # --- candidate senses (lookup by lemma, not wordform)
     lemma = sent[target_index].lemma
     candidates = wn.synsets(lemma)
 
     for sense in candidates:
-        # build extended Lesk signature text
         text_parts = [sense.definition(), *sense.examples()]
         # hyponyms
         for r in sense.hyponyms():
-            text_parts.append(r.definition())
-            text_parts.extend(r.examples())
+            text += " " + r.definition()
+            text += " " + " ".join(r.examples())
         # holonyms
         for r in sense.member_holonyms() + sense.part_holonyms() + sense.substance_holonyms():
-            text_parts.append(r.definition())
-            text_parts.extend(r.examples())
+            text += " " + r.definition()
+            text += " " + " ".join(r.examples())
         # meronyms
         for r in sense.member_meronyms() + sense.part_meronyms() + sense.substance_meronyms():
-            text_parts.append(r.definition())
-            text_parts.extend(r.examples())
+            text += " " + r.definition()
+            text += " " + " ".join(r.examples())
 
-        # tokenize signature; SET makes it “count each word once”
         sig_tokens = set(stop_tokenize(" ".join(text_parts)))
         if not sig_tokens:
             continue
@@ -455,8 +450,7 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
         if sig_norm < eps:
             continue
 
-        # cosine similarity
-        score = float(np.dot(sig_vec, ctx_vec) / (sig_norm * ctx_norm + eps))
+        score = float(np.dot(sig_vec, context_vec) / (sig_norm * context_norm + eps))
 
         if score > best_score:
             best_score = score
@@ -469,7 +463,7 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
 if __name__ == '__main__':
     np.random.seed(1234)
     eval_data = load_eval()
-    # for wsd_func in [mfs, lesk, lesk_ext, lesk_cos, lesk_cos_onesided]:
-    #     evaluate(eval_data, wsd_func)
+    for wsd_func in [mfs, lesk, lesk_ext, lesk_cos, lesk_cos_onesided]:
+        evaluate(eval_data, wsd_func)
 
     evaluate(eval_data, lesk_w2v, *load_word2vec())
