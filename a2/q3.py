@@ -163,7 +163,7 @@ class TraceTransformer(HookedTransformer):
             
             clean = activation_record[hook.name]
 
-            if act.dim < 3 or clean.dim < 3:
+            if act.ndim < 3 or clean.ndim < 3:
                 return
             
             if clean.shape[0] != act.shape[0]:
