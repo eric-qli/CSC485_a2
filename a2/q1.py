@@ -367,94 +367,96 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
     Returns:
         Synset: The prediction of the correct sense for the given word.
     """
+    eps = 1e-12
+    D = word2vec.shape[1]
 
-    def w2v_one(s: str, vocab: Mapping[str, int], W: np.ndarray) -> np.ndarray:
+    
+    def w2v_one(s: str) -> np.ndarray:
+        """Single-token lookup with lowercase fallback; zero vec if OOV."""
         if s in vocab:
-            return W[vocab[s]]
+            return word2vec[vocab[s]]
         s_low = s.lower()
         if s_low in vocab:
-            return W[vocab[s_low]]
-        return np.zeros(W.shape[1], dtype=W.dtype)
+            return word2vec[vocab[s_low]]
+        return np.zeros(D, dtype=word2vec.dtype)
 
-    def w2v_string(s: str, vocab: Mapping[str, int], W: np.ndarray) -> np.ndarray:
+    
+    def w2v_string(s: str) -> np.ndarray:
+        """
+        String lookup with MWE handling:
+        - try underscore form,
+        - else mean over space-split pieces (with one-word rules).
+        """
         if " " not in s:
-            return w2v_one(s, vocab, W)
+            return w2v_one(s)
 
         with_us = s.replace(" ", "_")
         if with_us in vocab:
-            return W[vocab[with_us]]
-        if with_us.lower() in vocab:
-            return W[vocab[with_us.lower()]]
+            return word2vec[vocab[with_us]]
+        with_us_low = with_us.lower()
+        if with_us_low in vocab:
+            return word2vec[vocab[with_us_low]]
 
-        parts = [w for w in s.split() if w]
+        parts = [p for p in s.split() if p]
         if not parts:
-            return np.zeros(W.shape[1], dtype=W.dtype)
-        vecs = [w2v_one(w, vocab, W) for w in parts]
-        return np.mean(vecs, axis=0)
-    
+            return np.zeros(D, dtype=word2vec.dtype)
+        vecs = [w2v_one(p) for p in parts]
+        # keep only non-zero rows
+        nz = [v for v in vecs if v.any()]
+        return np.mean(nz, axis=0) if nz else np.zeros(D, dtype=word2vec.dtype)
 
+    def mean_vec(tokens: set[str]) -> np.ndarray:
+        """Mean of non-zero vectors for a token set; zero if none."""
+        if not tokens:
+            return np.zeros(D, dtype=word2vec.dtype)
+        vecs = [w2v_string(t) for t in tokens]
+        nz = [v for v in vecs if v.any()]
+        return np.mean(nz, axis=0) if nz else np.zeros(D, dtype=word2vec.dtype)
+
+    # --- build context (all other lemmas), count each once
+    ctx_tokens = set(stop_tokenize(" ".join(tok.lemma for i, tok in enumerate(sent)
+                                            if i != target_index)))
+    ctx_vec = mean_vec(ctx_tokens)
+    ctx_norm = float(np.linalg.norm(ctx_vec))
+
+    # if no signal in context, fall back to MFS
     best_sense = mfs(sent, target_index)
-    best_score = 0
-    # context = set([tok.lemma for tok in sent])
-
-    all_sense = wn.synsets(sent[target_index].lemma)
-    context = set(stop_tokenize(" ".join(
-    tok.lemma for i, tok in enumerate(sent) if i != target_index)))
-
-    ctx_vecs = [w2v_string(w, vocab, word2vec) for w in context]
-    if len(ctx_vecs) == 0:
+    best_score = -1.0  # allow zero to win if any sense has signal
+    if ctx_norm < eps:
         return best_sense
-    ctx_vec = np.mean(ctx_vecs, axis=0)
-    ctx_norm = np.linalg.norm(ctx_vec)
 
-    lemma = sent[target_index].lemma  # lookup synsets by lemma
+    # --- candidate senses (lookup by lemma, not wordform)
+    lemma = sent[target_index].lemma
+    candidates = wn.synsets(lemma)
 
-    for sense in all_sense:
-        text = sense.definition() + " " + " ".join(sense.examples())
-
+    for sense in candidates:
+        # build extended Lesk signature text
+        text_parts = [sense.definition(), *sense.examples()]
+        # hyponyms
         for r in sense.hyponyms():
-            text += " " + r.definition()
-            text += " " + " ".join(r.examples())
+            text_parts.append(r.definition())
+            text_parts.extend(r.examples())
+        # holonyms
+        for r in sense.member_holonyms() + sense.part_holonyms() + sense.substance_holonyms():
+            text_parts.append(r.definition())
+            text_parts.extend(r.examples())
+        # meronyms
+        for r in sense.member_meronyms() + sense.part_meronyms() + sense.substance_meronyms():
+            text_parts.append(r.definition())
+            text_parts.extend(r.examples())
 
-        for r in sense.member_holonyms():
-            text += " " + r.definition()
-            text += " " + " ".join(r.examples())
-
-        for r in sense.part_holonyms():
-            text += " " + r.definition()
-            text += " " + " ".join(r.examples())
-
-        for r in sense.substance_holonyms():
-            text += " " + r.definition()
-            text += " " + " ".join(r.examples())
-
-        for r in sense.member_meronyms():
-            text += " " + r.definition()
-            text += " " + " ".join(r.examples())
-
-        for r in sense.part_meronyms():
-            text += " " + r.definition()
-            text += " " + " ".join(r.examples())
-
-        for r in sense.substance_meronyms():
-            text += " " + r.definition()
-            text += " " + " ".join(r.examples())
-
-        sig_tokens = stop_tokenize(" ".join(text))
+        # tokenize signature; SET makes it “count each word once”
+        sig_tokens = set(stop_tokenize(" ".join(text_parts)))
         if not sig_tokens:
             continue
 
-        sig_vecs = [w2v_string(w, vocab, word2vec) for w in sig_tokens]
-        if not sig_vecs:
+        sig_vec = mean_vec(sig_tokens)
+        sig_norm = float(np.linalg.norm(sig_vec))
+        if sig_norm < eps:
             continue
-        sig_vec = np.mean(sig_vecs, axis=0)
-        sig_norm = np.linalg.norm(sig_vec)
 
-        denom = sig_norm * ctx_norm
-        if denom == 0.0:
-            score = 0.0
-        else:
-            score = float(np.dot(sig_vec, ctx_vec) / denom)
+        # cosine similarity
+        score = float(np.dot(sig_vec, ctx_vec) / (sig_norm * ctx_norm + eps))
 
         if score > best_score:
             best_score = score
