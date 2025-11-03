@@ -382,9 +382,7 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
     
     def w2v_string(s: str) -> np.ndarray:
         """
-        String lookup with MWE handling:
-        - try underscore form,
-        - else mean over space-split pieces (with one-word rules).
+        String lookup with MWE handling
         """
         if " " not in s:
             return w2v_one(s)
