@@ -1,6 +1,6 @@
-# STUDENT NAME: NAME
-# STUDENT NUMBER: NUMBER
-# UTORID: ID
+# STUDENT NAME: Eric Li 
+# STUDENT NUMBER: 1007654307
+# UTORID: lieric19
 
 '''
 This code is provided solely for the personal and private use of students
@@ -203,24 +203,16 @@ class TraceTransformer(HookedTransformer):
         """
         hooks = []
 
-        # 1️⃣ Always corrupt the embeddings
         hooks.append(("hook_embed", patch_embed_fn))
 
-        # 2️⃣ Depending on what we're restoring:
         if patch_name == "resid_pre":
-            # Restore at a specific layer's pre-residual input
             hooks.append((f"blocks.{layer}.hook_resid_pre", restore_fn))
-
         elif patch_name == "attn_out":
-            # Restore at the attention output — possibly across a window of layers
             for l in range(layer, min(layer + window, self.cfg.n_layers)):
                 hooks.append((f"blocks.{l}.hook_attn_out", restore_fn))
-
         elif patch_name == "mlp_post":
-            # Restore at the MLP output — possibly across a window
             for l in range(layer, min(layer + window, self.cfg.n_layers)):
                 hooks.append((f"blocks.{l}.hook_mlp_out", restore_fn))
-
         else:
             raise ValueError(f"Invalid patch_name '{patch_name}'")
 
@@ -245,52 +237,47 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: A 2D tensor of shape (sequence_length - 1, n_layers) containing the causal tracing results.
         """
-        # ---- 1) Tokenize & basic sizes
-        tokens = self.to_tokens(prompt)                # [B=1, T]
+        # Tokenize & basic sizes
+        tokens = self.to_tokens(prompt) 
         seq_len = tokens.size(1)
         n_layers = self.cfg.n_layers
 
-        # ---- 2) Find the source span to corrupt (token indices)
-        corrupt_span = self.find_sequence_span(prompt, source)  # 1D tensor of positions
+        # Find the source span to corrupt
+        corrupt_span = self.find_sequence_span(prompt, source)
 
-        # ---- 3) Build patch (embedding corruption) hook
+        # Build patchhook
         patch_embed_fn = self.get_patch_emb_fn(corrupt_span, noise=noise)
 
-        # ---- 4) Target id for final-position probability
+        # Target id for final-position probability
         target_id = self.get_target_id(target)
 
-        # ---- 5) Corrupted baseline probability (run once)
-        corrupted_probs = self.get_corrupted_probs(prompt, patch_embed_fn)  # [V]
+        # Corrupted baseline probability 
+        corrupted_probs = self.get_corrupted_probs(prompt, patch_embed_fn) 
         P_corrupt = corrupted_probs[0, target_id].item() if corrupted_probs.dim() == 2 else corrupted_probs[target_id].item()
 
-        # ---- 6) Record clean activations (run once, clean)
+        # Record clean activations
         clean_record = self.record_clean_activations(prompt)
 
-        # ---- 7) Allocate IE matrix
+        # Allocate IE matrix
         ie = torch.zeros(seq_len - 1, n_layers)
 
-        # We usually exclude the BOS at position 0; iterate tokens 1..(T-1)
-        # These are the positions we attempt to restore one at a time.
         for token_idx in range(1, seq_len):
-            # Restore function for this token position
             restore_fn = self.get_restore_fn(clean_record, token_idx)
 
             for layer in range(n_layers):
-                # Build hooks: always corrupt embeddings + restore at chosen site/layer
                 hooks = self.get_forward_hooks(
                     layer=layer,
                     patch_embed_fn=patch_embed_fn,
-                    patch_name=patch_name,   # 'resid_pre' | 'attn_out' | 'mlp_post'
+                    patch_name=patch_name, 
                     restore_fn=restore_fn,
                     window=window
                 )
 
-                # Run with the combined hooks
                 logits = self.run_with_hooks(tokens, fwd_hooks=hooks)
                 probs = torch.softmax(logits[:, -1, :], dim=-1)
                 P_restored = probs[0, target_id].item()
 
-                # Indirect Effect
+                # IE
                 ie[token_idx - 1, layer] = P_restored - P_corrupt
 
         return ie
@@ -340,10 +327,10 @@ if __name__ == '__main__':
     model_name = model_name
 
     request = {
-        'prompt': 'The Space Needle is located in',
-        'source': 'The Space Needle',
-        'target': 'Seattle',
-    }
+         'prompt': 'The capital of France is',
+         'source': 'France',
+         'target': 'Paris',
+     }
 
     run_causal_trace(model_name=model_name, patch_name='resid_pre', **request)
     run_causal_trace(model_name=model_name, patch_name='mlp_post', **request)
