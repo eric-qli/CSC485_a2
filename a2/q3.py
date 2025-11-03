@@ -115,12 +115,13 @@ class TraceTransformer(HookedTransformer):
 
         if prompt_tokens and seq_tokens and prompt_tokens[0] == seq_tokens[0]:
             prompt_tokens, seq_tokens = prompt_tokens[1:], seq_tokens[1:]
-        
+
         for i in range(len(prompt_tokens) - len(seq_tokens) + 1):
             if prompt_tokens[i:i + len(seq_tokens)] == seq_tokens:
                 indices = list(range(i , i + len(seq_tokens)))
                 return torch.tensor(indices, dtype=torch.long)
- 
+
+
 
     def get_patch_emb_fn(self, corrupt_span: Tensor, noise: float = 1.) -> Callable:
         """
@@ -159,21 +160,21 @@ class TraceTransformer(HookedTransformer):
         def restore_fn(act: Tensor, hook):
             if hook.name not in activation_record:
                 return 
-            
+
             clean = activation_record[hook.name]
 
             if act.ndim < 3 or clean.ndim < 3:
                 return
-            
+
             if clean.shape[0] != act.shape[0]:
                 if clean.shape[0] == 1:
                     clean = clean.expand(act.shape[0], *clean.shape[1:])
                 else:
                     return 
-                
+
             if token_idx >= act.shape[1] or token_idx >= clean.shape[1]:
                 return
-            
+
             clean_slice = clean[:, token_idx, :].to(act.device, dtype=act.dtype)
 
             act[:, token_idx, :] = clean_slice
@@ -323,21 +324,14 @@ def run_causal_trace(model_name='gpt2-xl', patch_name='resid_pre',
     plot_heatmap(result, name+'.pdf', cmap)
 
 if __name__ == '__main__':
-    model_name = 'gpt2'
+    model_name = 'gpt2-medium'
     model_name = model_name
 
-    # request = {
-    #     'prompt': 'The Forbidden City is located in',
-    #     'source': 'The Forbidden City',
-    #     'target': 'Beijing',
-    # }
-    
     request = {
-        'prompt': 'The Space Needle is located in',
-        'source': 'The Space Needle',
-        'target': 'Seattle',
+        'prompt': 'The Eiffel Tower is located in the city of',
+        'source': 'The Eiffel Tower',
+        'target': 'Paris',
     }
-
 
     run_causal_trace(model_name=model_name, patch_name='resid_pre', **request)
     run_causal_trace(model_name=model_name, patch_name='mlp_post', **request)
