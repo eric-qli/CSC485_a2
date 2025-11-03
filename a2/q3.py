@@ -90,54 +90,55 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: The corrupted probabilities for the last token.
         """
-        # 1️⃣ Tokenize
-        enc = self.tokenizer(prompt, return_tensors="pt")
+        # 1) Tokenize -> token ids [1, T]
+        toks = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)["input_ids"]
 
-        # 2️⃣ Extract model & embeddings indirectly
-        model_ref = getattr(self, "hooked_model", None)
+        # 2) Find a HookedTransformer-like object on self
+        model_ref = None
+        for v in self.__dict__.values():
+            # Heuristic: TL models have .add_hook and a 'hook_embed' hook name
+            if hasattr(v, "add_hook") and hasattr(v, "hooks"):
+                model_ref = v
+                break
         if model_ref is None:
-            # fallback: try attribute with model-like structure
-            for v in self.__dict__.values():
-                if hasattr(v, "get_input_embeddings"):
-                    model_ref = v
-                    break
-        if model_ref is None:
-            raise AttributeError("No model-like object with get_input_embeddings() found in this class.")
+            raise AttributeError("Could not find a TransformerLens HookedTransformer on this object.")
 
-        emb_module = model_ref.get_input_embeddings()
-        device = emb_module.weight.device
-        enc = {k: v.to(device) for k, v in enc.items()}
+        # 3) Move tokens to the model’s device (use embedding weight’s device)
+        #    TL uses model_ref.W_E or model_ref.embed.W_E for embeddings.
+        W_E = getattr(model_ref, "W_E", None) or getattr(getattr(model_ref, "embed", None), "W_E", None)
+        if W_E is None:
+            raise AttributeError("Could not locate embedding weight (W_E) on the TL model.")
+        device = W_E.device
+        toks = toks.to(device)
 
-        # 3️⃣ Hook function to patch embeddings
-        def emb_hook(module, inputs, output):
-            patched = patch_embed_fn(output)
-            if patched.shape != output.shape:
-                raise ValueError(f"patch_embed_fn changed shape: {patched.shape} vs {output.shape}")
-            if patched.device != output.device:
-                patched = patched.to(output.device)
-            if patched.dtype != output.dtype:
-                patched = patched.to(output.dtype)
+        # 4) Define the forward hook for 'hook_embed'
+        def fwd_hook(value, hook):
+            # value: [B, T, d_model] residual stream right after embeddings
+            patched = patch_embed_fn(value)
+            if patched.shape != value.shape:
+                raise ValueError(f"patch_embed_fn changed shape {patched.shape} vs {value.shape}")
+            if patched.device != value.device:
+                patched = patched.to(value.device)
+            if patched.dtype != value.dtype:
+                patched = patched.to(value.dtype)
             return patched
 
-        handle = emb_module.register_forward_hook(emb_hook)
+        # 5) Run with the hook (context manager keeps it clean)
+        # TL API: model_ref.hooks(fwd_hooks=[("hook_embed", fwd_hook)])
+        with model_ref.hooks(fwd_hooks=[("hook_embed", fwd_hook)]):
+            with torch.no_grad():
+                # TL forward returns logits [B, T, V]
+                logits = model_ref(toks)
 
-        # 4️⃣ Forward pass (no self.model — just use model_ref)
-        model_ref.eval()
-        with torch.no_grad():
-            out = model_ref(**enc)
-            logits = out.logits  # [B, T, V]
-
-        handle.remove()
-
-        # 5️⃣ Determine target token position
+        # 6) Choose target position
         if hasattr(self, "get_target_id") and callable(getattr(self, "get_target_id")):
-            target_pos = int(self.get_target_id(enc))
+            target_pos = int(self.get_target_id({"input_ids": toks}))
             target_pos = max(0, min(logits.size(1) - 1, target_pos))
         else:
             target_pos = logits.size(1) - 1
 
-        # 6️⃣ Convert to probabilities
-        probs = F.softmax(logits[0, target_pos], dim=-1)
+        # 7) Return probs at that position
+        probs = F.softmax(logits[0, target_pos], dim=-1)  # [V]
         return probs
 
     
