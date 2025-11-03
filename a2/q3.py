@@ -328,9 +328,9 @@ if __name__ == '__main__':
     model_name = model_name
 
     request = {
-        'prompt': 'The Statue of Liberty is located in',
-        'source': 'The Statue of Liberty',
-        'target': 'New York',
+        'prompt': 'The Forbidden City is located in',
+        'source': 'The Forbidden City',
+        'target': 'Beijing',
     }
 
     run_causal_trace(model_name=model_name, patch_name='resid_pre', **request)
