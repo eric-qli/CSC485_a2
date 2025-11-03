@@ -121,17 +121,28 @@ class TraceTransformer(HookedTransformer):
         #         indices = list(range(i , i + len(seq_tokens)))
         #         return torch.tensor(indices, dtype=torch.long)
 
-        prompt_tokens = self.to_tokens(prompt)[0].tolist()
-        seq_tokens = self.to_tokens(seq)[0].tolist()
+        p_ids = self.to_tokens(prompt)[0].tolist()
+        s_ids = self.to_tokens(seq)[0].tolist()
 
-        if prompt_tokens[0] == self.tokenizer.bos_token_id:
-            prompt_tokens = prompt_tokens[1:]
-        if seq_tokens[0] == self.tokenizer.bos_token_id:
-            seq_tokens = seq_tokens[1:]
+        # figure out BOS id used by this tokenizer (GPT-2 uses 50256 <|endoftext|>)
+        bos = getattr(self.tokenizer, "bos_token_id", None)
+        if bos is None:
+            bos = getattr(self.tokenizer, "eos_token_id", None)
 
-        for i in range(len(prompt_tokens) - len(seq_tokens) + 1):
-            if prompt_tokens[i:i + len(seq_tokens)] == seq_tokens:
-                return torch.tensor(range(i, i + len(seq_tokens)))
+        # strip BOS from BOTH sequences for matching
+        p_off = 0
+        if p_ids and p_ids[0] == bos:
+            p_ids = p_ids[1:]
+            p_off = 1
+        if s_ids and s_ids[0] == bos:
+            s_ids = s_ids[1:]
+
+        # subsequence search on BOS-stripped lists
+        for i in range(len(p_ids) - len(s_ids) + 1):
+            if p_ids[i:i+len(s_ids)] == s_ids:
+                start = i + p_off          # add BOS offset back
+                end   = start + len(s_ids)
+                return torch.arange(start, end, dtype=torch.long)
  
 
     def get_patch_emb_fn(self, corrupt_span: Tensor, noise: float = 1.) -> Callable:
