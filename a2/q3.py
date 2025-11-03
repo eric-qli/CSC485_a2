@@ -110,8 +110,8 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: A tensor containing the indices of the sequence in the prompt.
         """
-        prompt_tokens = self.to_tokens(prompt)
-        seq_tokens = self.to_tokens(seq)
+        prompt_tokens = self.to_tokens(prompt)[0].tolist()
+        seq_tokens = self.to_tokens(seq)[0].tolist()
 
         if prompt_tokens and seq_tokens and prompt_tokens[0] == seq_tokens[0]:
             prompt_tokens, seq_tokens = prompt_tokens[1:], seq_tokens[1:]
