@@ -320,6 +320,15 @@ def run_causal_trace(model_name='gpt2-xl', patch_name='resid_pre',
         prompt=prompt, source=source, target=target,
         patch_name=patch_name,
         noise=0.5)
+    
+    # --- DEBUG: check tokenization & span ---
+    toks = model.to_str_tokens(request['prompt'])
+    print('Tokens:', list(enumerate(toks)))
+
+    span = model.find_sequence_span(request['prompt'], request['source'])
+    print('Span indices for source:', span.tolist())
+    # ----------------------------------------
+
 
     plot_heatmap(result, name+'.pdf', cmap)
 
@@ -332,6 +341,7 @@ if __name__ == '__main__':
         'source': 'The Forbidden City',
         'target': 'Beijing',
     }
+    
 
     run_causal_trace(model_name=model_name, patch_name='resid_pre', **request)
     run_causal_trace(model_name=model_name, patch_name='mlp_post', **request)
