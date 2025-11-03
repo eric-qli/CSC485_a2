@@ -339,47 +339,67 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: A 2D tensor of shape (sequence_length - 1, n_layers) containing the causal tracing results.
         """
-        device = next(self.model.parameters()).device
-        
+        # 1) Sequence length from tokenizer (CPU is fine)
         enc = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
-        input_ids = enc["input_ids"].to(device) 
+        input_ids = enc["input_ids"]           # [1, T]
         seq_len = input_ids.size(1)
 
+        # 2) Target id (use first token if multi-token)
         tgt_ids = self.tokenizer(target, add_special_tokens=False)["input_ids"]
         if not tgt_ids:
             raise ValueError(f"Could not tokenize target string: {target!r}")
         target_id = tgt_ids[0]
 
+        # 3) Build corruption function for the source span
         span_idx = self.find_sequence_span(prompt, source)
         if span_idx.numel() == 0:
             raise ValueError(f"Source sequence {source!r} not found in prompt.")
         patch_emb_corrupt = self.get_patch_emb_fn(span_idx, noise=noise)
 
-        probs_corrupt = self.get_corrupted_probs(prompt, patch_emb_corrupt).to(device)
-        base_corrupt_p = float(probs_corrupt[target_id])
+        # 4) Baseline corrupted probability (no layer patch)
+        probs_corrupt = self.get_corrupted_probs(prompt, patch_emb_corrupt)  # [V] on model's device
+        base_corrupt_p = probs_corrupt[target_id].item()
 
+        # 5) Record clean activations (returns dict of tensors keyed by hook-name)
         activation_record: Dict[str, Tensor] = self.record_clean_activations(prompt)
 
-        n_layers = getattr(self.model.config, "num_hidden_layers", None)
-        if n_layers is None:
-            n_layers = len(getattr(self.model, "transformer", getattr(self.model, "layers")).h)
-        effects = torch.zeros(seq_len - 1, n_layers, device=device)
+        # 6) Infer number of layers from activation_record keys (no model access)
+        #    Expect keys like "L{layer}.{patch_name}"
+        layer_ids = []
+        pat = re.compile(r"^L(\d+)\." + re.escape(patch_name) + r"$")
+        for k in activation_record.keys():
+            m = pat.match(k)
+            if m:
+                layer_ids.append(int(m.group(1)))
+        if not layer_ids:
+            raise KeyError(
+                f"No activations found for patch_name={patch_name!r} in activation_record keys: "
+                f"{list(activation_record.keys())[:5]} ..."
+            )
+        n_layers = max(layer_ids) + 1
 
+        # 7) Output effects matrix on CPU
+        effects = torch.zeros(seq_len - 1, n_layers)
+
+        # 8) Small helpers to register/remove hooks via self.hook_sites
         def _register_hooks(hooks: List[Tuple[str, Callable]]):
-            """Register hooks on modules referenced by self.hook_sites[hook_name]."""
             handles = []
-            for hook_name, hook_fn in hooks:
-                if not hasattr(self, "hook_sites") or hook_name not in self.hook_sites:
-                    raise KeyError(f"Hook site {hook_name!r} not found in self.hook_sites; "
-                                f"ensure you mapped it to the correct module.")
-                handles.append(self.hook_sites[hook_name].register_forward_hook(hook_fn))
+            for hook_key, hook_fn in hooks:
+                if not hasattr(self, "hook_sites") or hook_key not in self.hook_sites:
+                    raise KeyError(
+                        f"Hook site {hook_key!r} not found in self.hook_sites; "
+                        "map it to the correct module before tracing."
+                    )
+                handles.append(self.hook_sites[hook_key].register_forward_hook(hook_fn))
             return handles
 
         def _remove_hooks(handles):
             for h in handles:
                 h.remove()
 
+        # 9) Sweep positions and layers
         for pos in range(seq_len - 1):
+            # restore function that keeps only `pos` patched
             restore_fn = self.get_restore_fn(activation_record, token_idx=pos)
 
             for layer in range(n_layers):
@@ -390,6 +410,7 @@ class TraceTransformer(HookedTransformer):
 
                 clean_act = activation_record[hook_key]
 
+                # Patch function that returns *clean* activation with correct device/dtype
                 def patch_clean(act, _clean=clean_act):
                     return _clean.to(act.device, dtype=act.dtype)
 
@@ -398,16 +419,17 @@ class TraceTransformer(HookedTransformer):
                     patch_embed_fn=patch_clean,
                     patch_name=patch_name,
                     restore_fn=restore_fn,
-                    window=window
+                    window=window,
                 )
 
                 handles = _register_hooks(hooks)
                 try:
-                    probs_patched = self.get_corrupted_probs(prompt, patch_emb_corrupt).to(device)  # [V]
+                    # Run a corrupted pass (embeddings are noised) with this layer patched
+                    probs_patched = self.get_corrupted_probs(prompt, patch_emb_corrupt)  # [V]
                 finally:
                     _remove_hooks(handles)
 
-                p_patched = float(probs_patched[target_id])
+                p_patched = probs_patched[target_id].item()
                 effects[pos, layer] = p_patched - base_corrupt_p
 
         return effects
