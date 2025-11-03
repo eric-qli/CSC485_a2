@@ -339,8 +339,8 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: A 2D tensor of shape (sequence_length - 1, n_layers) containing the causal tracing results.
         """
-        device = self.device
-
+        device = next(self.model.parameters()).device
+        
         enc = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
         input_ids = enc["input_ids"].to(device) 
         seq_len = input_ids.size(1)
