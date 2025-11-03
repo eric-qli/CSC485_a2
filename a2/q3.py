@@ -90,15 +90,25 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: The corrupted probabilities for the last token.
         """
-        # 1) Tokenize
+        # 1️⃣ Tokenize
         enc = self.tokenizer(prompt, return_tensors="pt")
 
-        # 2) Use the input-embedding module’s device
-        emb_module = self.model.get_input_embeddings()
-        device = getattr(emb_module.weight, "device", torch.device("cpu"))
+        # 2️⃣ Extract model & embeddings indirectly
+        model_ref = getattr(self, "hooked_model", None)
+        if model_ref is None:
+            # fallback: try attribute with model-like structure
+            for v in self.__dict__.values():
+                if hasattr(v, "get_input_embeddings"):
+                    model_ref = v
+                    break
+        if model_ref is None:
+            raise AttributeError("No model-like object with get_input_embeddings() found in this class.")
+
+        emb_module = model_ref.get_input_embeddings()
+        device = emb_module.weight.device
         enc = {k: v.to(device) for k, v in enc.items()}
 
-        # 3) Hook that patches embeddings
+        # 3️⃣ Hook function to patch embeddings
         def emb_hook(module, inputs, output):
             patched = patch_embed_fn(output)
             if patched.shape != output.shape:
@@ -111,23 +121,25 @@ class TraceTransformer(HookedTransformer):
 
         handle = emb_module.register_forward_hook(emb_hook)
 
-        # 4) Forward, then remove hook
-        self.model.eval()
+        # 4️⃣ Forward pass (no self.model — just use model_ref)
+        model_ref.eval()
         with torch.no_grad():
-            out = self.model(**enc)
+            out = model_ref(**enc)
             logits = out.logits  # [B, T, V]
+
         handle.remove()
 
-        # 5) Pick target position (yours may override via get_target_id)
+        # 5️⃣ Determine target token position
         if hasattr(self, "get_target_id") and callable(getattr(self, "get_target_id")):
             target_pos = int(self.get_target_id(enc))
             target_pos = max(0, min(logits.size(1) - 1, target_pos))
         else:
             target_pos = logits.size(1) - 1
 
-        # 6) Return vocab probs at target position
-        probs = F.softmax(logits[0, target_pos], dim=-1)  # [V]
+        # 6️⃣ Convert to probabilities
+        probs = F.softmax(logits[0, target_pos], dim=-1)
         return probs
+
     
 
     def find_sequence_span(self, prompt: str, seq: str) -> Tensor:
