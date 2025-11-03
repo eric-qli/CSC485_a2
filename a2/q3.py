@@ -90,11 +90,15 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: The corrupted probabilities for the last token.
         """
+        # 1) Tokenize
         enc = self.tokenizer(prompt, return_tensors="pt")
-        enc = {k: v.to(self.device) for k, v in enc.items()}
 
+        # 2) Use the input-embedding module’s device
         emb_module = self.model.get_input_embeddings()
+        device = getattr(emb_module.weight, "device", torch.device("cpu"))
+        enc = {k: v.to(device) for k, v in enc.items()}
 
+        # 3) Hook that patches embeddings
         def emb_hook(module, inputs, output):
             patched = patch_embed_fn(output)
             if patched.shape != output.shape:
@@ -107,20 +111,22 @@ class TraceTransformer(HookedTransformer):
 
         handle = emb_module.register_forward_hook(emb_hook)
 
+        # 4) Forward, then remove hook
         self.model.eval()
         with torch.no_grad():
             out = self.model(**enc)
-            logits = out.logits
-
+            logits = out.logits  # [B, T, V]
         handle.remove()
 
+        # 5) Pick target position (yours may override via get_target_id)
         if hasattr(self, "get_target_id") and callable(getattr(self, "get_target_id")):
             target_pos = int(self.get_target_id(enc))
             target_pos = max(0, min(logits.size(1) - 1, target_pos))
         else:
             target_pos = logits.size(1) - 1
 
-        probs = F.softmax(logits[0, target_pos], dim=-1)
+        # 6) Return vocab probs at target position
+        probs = F.softmax(logits[0, target_pos], dim=-1)  # [V]
         return probs
     
 
