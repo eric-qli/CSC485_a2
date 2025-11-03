@@ -92,7 +92,7 @@ class TraceTransformer(HookedTransformer):
         """
         tokens = self.to_tokens(prompt)
 
-        logits = self.run_with_hooks(tokens, fwd_hook=[("hook_embed", patch_embed_fn)])
+        logits = self.run_with_hooks(tokens, fwd_hooks=[("hook_embed", patch_embed_fn)])
 
         probs = torch.softmax(logits[0][-1], dim=-1)
 
