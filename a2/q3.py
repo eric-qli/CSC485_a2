@@ -110,39 +110,16 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: A tensor containing the indices of the sequence in the prompt.
         """
-        # prompt_tokens = self.to_tokens(prompt)[0].tolist()
-        # seq_tokens = self.to_tokens(seq)[0].tolist()
+        prompt_tokens = self.to_tokens(prompt)[0].tolist()
+        seq_tokens = self.to_tokens(seq)[0].tolist()
 
-        # if prompt_tokens and seq_tokens and prompt_tokens[0] == seq_tokens[0]:
-        #     prompt_tokens, seq_tokens = prompt_tokens[1:], seq_tokens[1:]
+        if prompt_tokens and seq_tokens and prompt_tokens[0] == seq_tokens[0]:
+            prompt_tokens, seq_tokens = prompt_tokens[1:], seq_tokens[1:]
         
-        # for i in range(len(prompt_tokens) - len(seq_tokens) + 1):
-        #     if prompt_tokens[i:i + len(seq_tokens)] == seq_tokens:
-        #         indices = list(range(i , i + len(seq_tokens)))
-        #         return torch.tensor(indices, dtype=torch.long)
-
-        p_ids = self.to_tokens(prompt)[0].tolist()
-        s_ids = self.to_tokens(seq)[0].tolist()
-
-        # figure out BOS id used by this tokenizer (GPT-2 uses 50256 <|endoftext|>)
-        bos = getattr(self.tokenizer, "bos_token_id", None)
-        if bos is None:
-            bos = getattr(self.tokenizer, "eos_token_id", None)
-
-        # strip BOS from BOTH sequences for matching
-        p_off = 0
-        if p_ids and p_ids[0] == bos:
-            p_ids = p_ids[1:]
-            p_off = 1
-        if s_ids and s_ids[0] == bos:
-            s_ids = s_ids[1:]
-
-        # subsequence search on BOS-stripped lists
-        for i in range(len(p_ids) - len(s_ids) + 1):
-            if p_ids[i:i+len(s_ids)] == s_ids:
-                start = i + p_off          # add BOS offset back
-                end   = start + len(s_ids)
-                return torch.arange(start, end, dtype=torch.long)
+        for i in range(len(prompt_tokens) - len(seq_tokens) + 1):
+            if prompt_tokens[i:i + len(seq_tokens)] == seq_tokens:
+                indices = list(range(i , i + len(seq_tokens)))
+                return torch.tensor(indices, dtype=torch.long)
  
 
     def get_patch_emb_fn(self, corrupt_span: Tensor, noise: float = 1.) -> Callable:
@@ -342,14 +319,6 @@ def run_causal_trace(model_name='gpt2-xl', patch_name='resid_pre',
         prompt=prompt, source=source, target=target,
         patch_name=patch_name,
         noise=0.5)
-    
-        # --- DEBUG: check tokenization & span ---
-    toks = model.to_str_tokens(request['prompt'])
-    print('Tokens:', list(enumerate(toks)))
-
-    span = model.find_sequence_span(request['prompt'], request['source'])
-    print('Span indices for source:', span.tolist())
-    # ----------------------------------------
 
     plot_heatmap(result, name+'.pdf', cmap)
 
@@ -357,12 +326,18 @@ if __name__ == '__main__':
     model_name = 'gpt2'
     model_name = model_name
 
-    request = {
-        'prompt': 'The Forbidden City is located in',
-        'source': 'The Forbidden City',
-        'target': 'Beijing',
-    }
+    # request = {
+    #     'prompt': 'The Forbidden City is located in',
+    #     'source': 'The Forbidden City',
+    #     'target': 'Beijing',
+    # }
     
+    request = {
+        'prompt': 'The Space Needle is located in',
+        'source': 'The Space Needle',
+        'target': 'Seattle',
+    }
+
 
     run_causal_trace(model_name=model_name, patch_name='resid_pre', **request)
     run_causal_trace(model_name=model_name, patch_name='mlp_post', **request)
