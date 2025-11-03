@@ -213,6 +213,7 @@ class TraceTransformer(HookedTransformer):
         elif patch_name == "mlp_post":
             for l in range(layer, min(layer + window, self.cfg.n_layers)):
                 hooks.append((f"blocks.{l}.hook_mlp_out", restore_fn))
+
         else:
             raise ValueError(f"Invalid patch_name '{patch_name}'")
 
@@ -327,10 +328,10 @@ if __name__ == '__main__':
     model_name = model_name
 
     request = {
-         'prompt': 'The capital of France is',
-         'source': 'capital of France',
-         'target': 'Paris',
-     }
+        'prompt': 'The Eiffel Tower is located in the city of',
+        'source': 'The Eiffel Tower',
+        'target': 'Paris',
+    }
 
     run_causal_trace(model_name=model_name, patch_name='resid_pre', **request)
     run_causal_trace(model_name=model_name, patch_name='mlp_post', **request)
