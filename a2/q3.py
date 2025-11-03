@@ -336,13 +336,13 @@ def run_causal_trace(model_name='gpt2-xl', patch_name='resid_pre',
     plot_heatmap(result, name+'.pdf', cmap)
 
 if __name__ == '__main__':
-    model_name = 'gpt2'
+    model_name = 'gpt2-xl'
     model_name = model_name
 
     request = {
-        'prompt': 'The Eiffel Tower is located in the city of',
-        'source': 'The Eiffel Tower',
-        'target': 'Paris',
+        'prompt': 'The Space Needle is located in',
+        'source': 'The Space Needle',
+        'target': 'Seattle',
     }
 
     run_causal_trace(model_name=model_name, patch_name='resid_pre', **request)
