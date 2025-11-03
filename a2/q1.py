@@ -317,7 +317,6 @@ def lesk_cos_onesided(sent: Sequence[WSDToken], target_index: int) -> Synset:
     return best_sense
 
 
-
 def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
              vocab: Mapping[str, int], word2vec: np.ndarray) -> Synset:
     """Extended Lesk algorithm using word2vec-based cosine similarity.
@@ -430,16 +429,16 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
         text_parts = [sense.definition(), *sense.examples()]
         # hyponyms
         for r in sense.hyponyms():
-            text += " " + r.definition()
-            text += " " + " ".join(r.examples())
+            text_parts += " " + r.definition()
+            text_parts += " " + " ".join(r.examples())
         # holonyms
         for r in sense.member_holonyms() + sense.part_holonyms() + sense.substance_holonyms():
-            text += " " + r.definition()
-            text += " " + " ".join(r.examples())
+            text_parts += " " + r.definition()
+            text_parts += " " + " ".join(r.examples())
         # meronyms
         for r in sense.member_meronyms() + sense.part_meronyms() + sense.substance_meronyms():
-            text += " " + r.definition()
-            text += " " + " ".join(r.examples())
+            text_parts += " " + r.definition()
+            text_parts += " " + " ".join(r.examples())
 
         sig_tokens = set(stop_tokenize(" ".join(text_parts)))
         if not sig_tokens:
@@ -458,12 +457,13 @@ def lesk_w2v(sent: Sequence[WSDToken], target_index: int,
 
     return best_sense
 
+        
 
 
 if __name__ == '__main__':
     np.random.seed(1234)
     eval_data = load_eval()
-    for wsd_func in [mfs, lesk, lesk_ext, lesk_cos, lesk_cos_onesided]:
-        evaluate(eval_data, wsd_func)
+    # for wsd_func in [mfs, lesk, lesk_ext, lesk_cos, lesk_cos_onesided]:
+    #     evaluate(eval_data, wsd_func)
 
     evaluate(eval_data, lesk_w2v, *load_word2vec())
