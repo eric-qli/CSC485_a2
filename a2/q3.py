@@ -328,7 +328,7 @@ if __name__ == '__main__':
     model_name = model_name
 
     request = {
-        'prompt': 'My favourite food is ',
+        'prompt': 'My favourite food is',
         'source': 'My favourite food',
         'target': 'pie',
     }
