@@ -328,7 +328,7 @@ if __name__ == '__main__':
 
     request = {
          'prompt': 'The capital of France is',
-         'source': 'France',
+         'source': 'capital of France',
          'target': 'Paris',
      }
 
