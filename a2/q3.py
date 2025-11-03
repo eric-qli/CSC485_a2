@@ -324,7 +324,7 @@ def run_causal_trace(model_name='gpt2-xl', patch_name='resid_pre',
     plot_heatmap(result, name+'.pdf', cmap)
 
 if __name__ == '__main__':
-    model_name = 'gpt2 small'
+    model_name = 'gpt2-medium'
     model_name = model_name
 
     request = {
