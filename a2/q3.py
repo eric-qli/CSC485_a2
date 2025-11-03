@@ -110,18 +110,29 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: A tensor containing the indices of the sequence in the prompt.
         """
+        # prompt_tokens = self.to_tokens(prompt)[0].tolist()
+        # seq_tokens = self.to_tokens(seq)[0].tolist()
+
+        # if prompt_tokens and seq_tokens and prompt_tokens[0] == seq_tokens[0]:
+        #     prompt_tokens, seq_tokens = prompt_tokens[1:], seq_tokens[1:]
+        
+        # for i in range(len(prompt_tokens) - len(seq_tokens) + 1):
+        #     if prompt_tokens[i:i + len(seq_tokens)] == seq_tokens:
+        #         indices = list(range(i , i + len(seq_tokens)))
+        #         return torch.tensor(indices, dtype=torch.long)
+
         prompt_tokens = self.to_tokens(prompt)[0].tolist()
         seq_tokens = self.to_tokens(seq)[0].tolist()
 
-        if prompt_tokens and seq_tokens and prompt_tokens[0] == seq_tokens[0]:
-            prompt_tokens, seq_tokens = prompt_tokens[1:], seq_tokens[1:]
-        
+        if prompt_tokens[0] == self.tokenizer.bos_token_id:
+            prompt_tokens = prompt_tokens[1:]
+        if seq_tokens[0] == self.tokenizer.bos_token_id:
+            seq_tokens = seq_tokens[1:]
+
         for i in range(len(prompt_tokens) - len(seq_tokens) + 1):
             if prompt_tokens[i:i + len(seq_tokens)] == seq_tokens:
-                indices = list(range(i , i + len(seq_tokens)))
-                return torch.tensor(indices, dtype=torch.long)
+                return torch.tensor(range(i, i + len(seq_tokens)))
  
-
 
     def get_patch_emb_fn(self, corrupt_span: Tensor, noise: float = 1.) -> Callable:
         """
@@ -320,15 +331,6 @@ def run_causal_trace(model_name='gpt2-xl', patch_name='resid_pre',
         prompt=prompt, source=source, target=target,
         patch_name=patch_name,
         noise=0.5)
-    
-    # --- DEBUG: check tokenization & span ---
-    toks = model.to_str_tokens(request['prompt'])
-    print('Tokens:', list(enumerate(toks)))
-
-    span = model.find_sequence_span(request['prompt'], request['source'])
-    print('Span indices for source:', span.tolist())
-    # ----------------------------------------
-
 
     plot_heatmap(result, name+'.pdf', cmap)
 
