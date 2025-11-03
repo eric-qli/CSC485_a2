@@ -90,58 +90,14 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: The corrupted probabilities for the last token.
         """
-        # 1) Tokenize -> token ids [1, T]
-        toks = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)["input_ids"]
+        tokens = self.to_tokens(prompt)
 
-        # 2) Find a HookedTransformer-like object on self
-        model_ref = None
-        for v in self.__dict__.values():
-            # Heuristic: TL models have .add_hook and a 'hook_embed' hook name
-            if hasattr(v, "add_hook") and hasattr(v, "hooks"):
-                model_ref = v
-                break
-        if model_ref is None:
-            raise AttributeError("Could not find a TransformerLens HookedTransformer on this object.")
+        logits = self.run_with_hooks(tokens, fwd_hook=[("hook_embed", patch_embed_fn)])
 
-        # 3) Move tokens to the model’s device (use embedding weight’s device)
-        #    TL uses model_ref.W_E or model_ref.embed.W_E for embeddings.
-        W_E = getattr(model_ref, "W_E", None) or getattr(getattr(model_ref, "embed", None), "W_E", None)
-        if W_E is None:
-            raise AttributeError("Could not locate embedding weight (W_E) on the TL model.")
-        device = W_E.device
-        toks = toks.to(device)
+        probs = torch.softmax(logits[0][-1], dim=-1)
 
-        # 4) Define the forward hook for 'hook_embed'
-        def fwd_hook(value, hook):
-            # value: [B, T, d_model] residual stream right after embeddings
-            patched = patch_embed_fn(value)
-            if patched.shape != value.shape:
-                raise ValueError(f"patch_embed_fn changed shape {patched.shape} vs {value.shape}")
-            if patched.device != value.device:
-                patched = patched.to(value.device)
-            if patched.dtype != value.dtype:
-                patched = patched.to(value.dtype)
-            return patched
+        return probs    
 
-        # 5) Run with the hook (context manager keeps it clean)
-        # TL API: model_ref.hooks(fwd_hooks=[("hook_embed", fwd_hook)])
-        with model_ref.hooks(fwd_hooks=[("hook_embed", fwd_hook)]):
-            with torch.no_grad():
-                # TL forward returns logits [B, T, V]
-                logits = model_ref(toks)
-
-        # 6) Choose target position
-        if hasattr(self, "get_target_id") and callable(getattr(self, "get_target_id")):
-            target_pos = int(self.get_target_id({"input_ids": toks}))
-            target_pos = max(0, min(logits.size(1) - 1, target_pos))
-        else:
-            target_pos = logits.size(1) - 1
-
-        # 7) Return probs at that position
-        probs = F.softmax(logits[0, target_pos], dim=-1)  # [V]
-        return probs
-
-    
 
     def find_sequence_span(self, prompt: str, seq: str) -> Tensor:
         """
@@ -154,24 +110,17 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: A tensor containing the indices of the sequence in the prompt.
         """
-        prompt_ids = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
-        seq_ids = self.tokenizer(seq, add_special_tokens=False)["input_ids"]
+        prompt_tokens = self.to_tokens(prompt)
+        seq_tokens = self.to_tokens(seq)
 
-        if not prompt_ids or not seq_ids or len(seq_ids) > len(prompt_ids):
-            return torch.empty(0, dtype=torch.long)
-
-        found_start = -1
-        for i in range(len(prompt_ids) - len(seq_ids) + 1):
-            if prompt_ids[i : i + len(seq_ids)] == seq_ids:
-                found_start = i
-                break
-
-        if found_start == -1:
-            return torch.empty(0, dtype=torch.long)
-
-        indices = list(range(found_start, found_start + len(seq_ids)))
-
-        return torch.tensor(indices, dtype=torch.long)
+        if prompt_tokens and seq_tokens and prompt_tokens[0] == seq_tokens[0]:
+            prompt_tokens, seq_tokens = prompt_tokens[1:], seq_tokens[1:]
+        
+        for i in range(len(prompt_tokens) - len(seq_tokens) + 1):
+            if prompt_tokens[i:i + len(seq_tokens)] == seq_tokens:
+                indices = list(range(i , i + len(seq_tokens)))
+                return torch.tensor(indices, dtype=torch.long)
+ 
 
 
     def get_patch_emb_fn(self, corrupt_span: Tensor, noise: float = 1.) -> Callable:
@@ -185,51 +134,15 @@ class TraceTransformer(HookedTransformer):
         Returns:
         Callable: A function that patches the embeddings with noise.
         """
-        def patch_fn(act: Tensor) -> Tensor:
-            if act.ndim < 2:
-                return act
-            
-            B, T = act.shape[0], act.shape[1]
-            device = act.device
 
-            span = corrupt_span.to(device)
+        def patch_emb_fn(activation: Tensor, hook):
+            noise_tensor = torch.randn_like(activation[:, corrupt_span, :]) * noise
 
-            # Case 1: already a boolean mask
-            if span.dtype == torch.bool:
-                if span.ndim < 2:
-                    mask_bt = span.unsqueeze(0).expand(B, -1)
-                elif span.ndim == 2:
-                    mask_bt = span
+            activation[:, corrupt_span, :] += noise_tensor
 
-            # Case 2: not a boolean mask
-            else:
-                if span.ndim < 2:
-                    mask = torch.zeros(T, dtype=torch.bool, device=device)
-                    if span.numel() > 0:
-                        idx = span.long().clamp(0, T - 1)
-                        mask[idx] = True
-                    mask_bt = mask.unsqueeze(0).expand(B, -1)
+            return activation
 
-                elif span.ndim == 2:
-                    mask = torch.zeros(B, T, dtype=torch.bool, device=device)
-                    for b in range(B):
-                        row = span[b]
-                        row = row[row >= 0].long() if (row.ndim == 1) else row.long()
-                        if row.numel() > 0:
-                            row = row
-                            mask[b, row] = True
-                    
-                    mask_bt = mask
-        
-            while mask_bt.ndim < act.ndim:
-                mask_bt = mask_bt.unsqueeze(-1)
-
-            if torch.is_float_point(act):
-                noise_tensor = torch.randn_like(act) * float(noise) 
-            
-            return act + noise_tensor * mask_bt
-
-        return patch_fn
+        return patch_emb_fn
 
 
     def get_restore_fn(self,
@@ -244,27 +157,32 @@ class TraceTransformer(HookedTransformer):
         Returns:
         Callable: A function that restores the activations for the specified token.
         """
-        def restore_fn(patched: Tensor, original: Tensor) -> Tensor:
-            if patched.shape != original.shape:
-                return patched
+        def restore_fn(act: Tensor, hook):
+            if hook.name not in activation_record:
+                return 
             
-            if patched.device != original.device:
-                patched = patched.to(original.device)
-            
-            if patched.dtype != original.dtype:
-                patched = patched.to(original.dtype)
-            
-            if patched.ndim < 2:
-                return patched
-            
-            B, T = patched.shape[0], patched.shape[1]
-            idx = max(0, min(token_idx, T - 1))
+            clean = activation_record[hook.name]
 
-            out = original.clone()
-            out[:, idx] = patched[:, idx]
-            return out
+            if act.dim < 3 or clean.dim < 3:
+                return
+            
+            if clean.shape[0] != act.shape[0]:
+                if clean.shape[0] == 1:
+                    clean = clean.expand(act.shape[0], *clean.shape[1:])
+                else:
+                    return 
+                
+            if token_idx >= act.shape[1] or token_idx >= clean.shape[1]:
+                return
+            
+            clean_slice = clean[:, token_idx, :].to(act.device, dtype=act.dtype)
+
+            act[:, token_idx, :] = clean_slice
+
+            return act
 
         return restore_fn
+
 
 
     def get_forward_hooks(self, layer: int,
@@ -283,62 +201,31 @@ class TraceTransformer(HookedTransformer):
         Returns:
         List[Tuple[str, Callable]]: A list of tuples containing the hook names and functions.
         """
-        if patch_name not in {"resid_pre", "mlp_post", "attn_out"}:
-            raise ValueError(f"Unknown patch_name={patch_name}. "
-                            "Expected one of: 'resid_pre', 'mlp_post', 'attn_out'.")
+        hooks = []
 
-        hook_name = f"L{layer}.{patch_name}"
+        # 1️⃣ Always corrupt the embeddings
+        hooks.append(("hook_embed", patch_embed_fn))
 
-        center_idx = getattr(self, "target_idx", None)
+        # 2️⃣ Depending on what we're restoring:
+        if patch_name == "resid_pre":
+            # Restore at a specific layer's pre-residual input
+            hooks.append((f"blocks.{layer}.hook_resid_pre", restore_fn))
 
-        def _apply_window(orig: Tensor, repl: Tensor) -> Tensor:
-            """
-            Replace a [B, T, ...] slice around center_idx with repl’s slice.
-            If center_idx is None or tensor doesn't look like [B,T,...], replace all.
-            """
-            if orig.ndim < 2 or center_idx is None or window is None:
-                return repl 
+        elif patch_name == "attn_out":
+            # Restore at the attention output — possibly across a window of layers
+            for l in range(layer, min(layer + window, self.cfg.n_layers)):
+                hooks.append((f"blocks.{l}.hook_attn_out", restore_fn))
 
-            B, T = orig.shape[0], orig.shape[1]
-            c = max(0, min(T - 1, int(center_idx)))
-            start = max(0, c - int(window))
-            end = min(T, c + int(window) + 1)
+        elif patch_name == "mlp_post":
+            # Restore at the MLP output — possibly across a window
+            for l in range(layer, min(layer + window, self.cfg.n_layers)):
+                hooks.append((f"blocks.{l}.hook_mlp_out", restore_fn))
 
-            out = orig.clone()
-            out[:, start:end, ...] = repl[:, start:end, ...]
-            return out
+        else:
+            raise ValueError(f"Invalid patch_name '{patch_name}'")
 
-        def hook_fn(module, inputs, output):
-            """
-            Forward hook: intercept activation, patch with replacement from patch_embed_fn,
-            optionally window it, then call restore_fn(patched, original) and return.
-            """
-            is_tuple = isinstance(output, tuple)
-            act = output[0] if is_tuple else output
+        return hooks
 
-            repl = patch_embed_fn(act)
-
-            if repl.shape != act.shape:
-                raise ValueError(f"{hook_name}: patch_embed_fn changed shape "
-                                f"{repl.shape} vs {act.shape}")
-            if repl.device != act.device:
-                repl = repl.to(act.device)
-            if repl.dtype != act.dtype:
-                repl = repl.to(act.dtype)
-
-            patched = _apply_window(act, repl)
-
-            if restore_fn is not None:
-                patched = restore_fn(patched, act)
-
-            if is_tuple:
-                out_list = list(output)
-                out_list[0] = patched
-                return tuple(out_list)
-            return patched
-
-        return [(hook_name, hook_fn)]
-    
 
     def causal_trace_analysis(self,
             prompt: str, source: str, target: str,
@@ -358,100 +245,56 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: A 2D tensor of shape (sequence_length - 1, n_layers) containing the causal tracing results.
         """
-        # 1) Sequence length from tokenizer (CPU is fine)
-        enc = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
-        input_ids = enc["input_ids"]           # [1, T]
-        seq_len = input_ids.size(1)
+        # ---- 1) Tokenize & basic sizes
+        tokens = self.to_tokens(prompt)                # [B=1, T]
+        seq_len = tokens.size(1)
+        n_layers = self.cfg.n_layers
 
-        # 2) Target id (use first token if multi-token)
-        tgt_ids = self.tokenizer(target, add_special_tokens=False)["input_ids"]
-        if not tgt_ids:
-            raise ValueError(f"Could not tokenize target string: {target!r}")
-        target_id = tgt_ids[0]
+        # ---- 2) Find the source span to corrupt (token indices)
+        corrupt_span = self.find_sequence_span(prompt, source)  # 1D tensor of positions
 
-        # 3) Build corruption function for the source span
-        span_idx = self.find_sequence_span(prompt, source)
-        if span_idx.numel() == 0:
-            raise ValueError(f"Source sequence {source!r} not found in prompt.")
-        patch_emb_corrupt = self.get_patch_emb_fn(span_idx, noise=noise)
+        # ---- 3) Build patch (embedding corruption) hook
+        patch_embed_fn = self.get_patch_emb_fn(corrupt_span, noise=noise)
 
-        # 4) Baseline corrupted probability (no layer patch)
-        probs_corrupt = self.get_corrupted_probs(prompt, patch_emb_corrupt)  # [V] on model's device
-        base_corrupt_p = probs_corrupt[target_id].item()
+        # ---- 4) Target id for final-position probability
+        target_id = self.get_target_id(target)
 
-        # 5) Record clean activations (returns dict of tensors keyed by hook-name)
-        activation_record: Dict[str, Tensor] = self.record_clean_activations(prompt)
+        # ---- 5) Corrupted baseline probability (run once)
+        corrupted_probs = self.get_corrupted_probs(prompt, patch_embed_fn)  # [V]
+        P_corrupt = corrupted_probs[0, target_id].item() if corrupted_probs.dim() == 2 else corrupted_probs[target_id].item()
 
-        # 6) Infer number of layers from activation_record keys (no model access)
-        #    Expect keys like "L{layer}.{patch_name}"
-        layer_ids = []
-        pat = re.compile(r"^L(\d+)\." + re.escape(patch_name) + r"$")
-        for k in activation_record.keys():
-            m = pat.match(k)
-            if m:
-                layer_ids.append(int(m.group(1)))
-        if not layer_ids:
-            raise KeyError(
-                f"No activations found for patch_name={patch_name!r} in activation_record keys: "
-                f"{list(activation_record.keys())[:5]} ..."
-            )
-        n_layers = max(layer_ids) + 1
+        # ---- 6) Record clean activations (run once, clean)
+        clean_record = self.record_clean_activations(prompt)
 
-        # 7) Output effects matrix on CPU
-        effects = torch.zeros(seq_len - 1, n_layers)
+        # ---- 7) Allocate IE matrix
+        ie = torch.zeros(seq_len - 1, n_layers)
 
-        # 8) Small helpers to register/remove hooks via self.hook_sites
-        def _register_hooks(hooks: List[Tuple[str, Callable]]):
-            handles = []
-            for hook_key, hook_fn in hooks:
-                if not hasattr(self, "hook_sites") or hook_key not in self.hook_sites:
-                    raise KeyError(
-                        f"Hook site {hook_key!r} not found in self.hook_sites; "
-                        "map it to the correct module before tracing."
-                    )
-                handles.append(self.hook_sites[hook_key].register_forward_hook(hook_fn))
-            return handles
-
-        def _remove_hooks(handles):
-            for h in handles:
-                h.remove()
-
-        # 9) Sweep positions and layers
-        for pos in range(seq_len - 1):
-            # restore function that keeps only `pos` patched
-            restore_fn = self.get_restore_fn(activation_record, token_idx=pos)
+        # We usually exclude the BOS at position 0; iterate tokens 1..(T-1)
+        # These are the positions we attempt to restore one at a time.
+        for token_idx in range(1, seq_len):
+            # Restore function for this token position
+            restore_fn = self.get_restore_fn(clean_record, token_idx)
 
             for layer in range(n_layers):
-                hook_key = f"L{layer}.{patch_name}"
-                if hook_key not in activation_record:
-                    effects[pos, layer] = float("nan")
-                    continue
-
-                clean_act = activation_record[hook_key]
-
-                # Patch function that returns *clean* activation with correct device/dtype
-                def patch_clean(act, _clean=clean_act):
-                    return _clean.to(act.device, dtype=act.dtype)
-
+                # Build hooks: always corrupt embeddings + restore at chosen site/layer
                 hooks = self.get_forward_hooks(
                     layer=layer,
-                    patch_embed_fn=patch_clean,
-                    patch_name=patch_name,
+                    patch_embed_fn=patch_embed_fn,
+                    patch_name=patch_name,   # 'resid_pre' | 'attn_out' | 'mlp_post'
                     restore_fn=restore_fn,
-                    window=window,
+                    window=window
                 )
 
-                handles = _register_hooks(hooks)
-                try:
-                    # Run a corrupted pass (embeddings are noised) with this layer patched
-                    probs_patched = self.get_corrupted_probs(prompt, patch_emb_corrupt)  # [V]
-                finally:
-                    _remove_hooks(handles)
+                # Run with the combined hooks
+                logits = self.run_with_hooks(tokens, fwd_hooks=hooks)
+                probs = torch.softmax(logits[:, -1, :], dim=-1)
+                P_restored = probs[0, target_id].item()
 
-                p_patched = probs_patched[target_id].item()
-                effects[pos, layer] = p_patched - base_corrupt_p
+                # Indirect Effect
+                ie[token_idx - 1, layer] = P_restored - P_corrupt
 
-        return effects
+        return ie
+
 
 
 def run_causal_trace(model_name='gpt2-xl', patch_name='resid_pre',
