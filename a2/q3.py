@@ -90,9 +90,39 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: The corrupted probabilities for the last token.
         """
+        enc = self.tokenizer(prompt, return_tensors="pt")
+        enc = {k: v.to(self.device) for k, v in enc.items()}
 
-        ### YOUR CODE STARTS HERE
-        raise NotImplementedError("This function needs to be implemented")
+        emb_module = self.model.get_input_embeddings()
+
+        def emb_hook(module, inputs, output):
+            patched = patch_embed_fn(output)
+            if patched.shape != output.shape:
+                raise ValueError(f"patch_embed_fn changed shape: {patched.shape} vs {output.shape}")
+            if patched.device != output.device:
+                patched = patched.to(output.device)
+            if patched.dtype != output.dtype:
+                patched = patched.to(output.dtype)
+            return patched
+
+        handle = emb_module.register_forward_hook(emb_hook)
+
+        self.model.eval()
+        with torch.no_grad():
+            out = self.model(**enc)
+            logits = out.logits
+
+        handle.remove()
+
+        if hasattr(self, "get_target_id") and callable(getattr(self, "get_target_id")):
+            target_pos = int(self.get_target_id(enc))
+            target_pos = max(0, min(logits.size(1) - 1, target_pos))
+        else:
+            target_pos = logits.size(1) - 1
+
+        probs = F.softmax(logits[0, target_pos], dim=-1)
+        return probs
+    
 
     def find_sequence_span(self, prompt: str, seq: str) -> Tensor:
         """
@@ -105,9 +135,25 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: A tensor containing the indices of the sequence in the prompt.
         """
+        prompt_ids = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+        seq_ids = self.tokenizer(seq, add_special_tokens=False)["input_ids"]
 
-        ### YOUR CODE STARTS HERE
-        raise NotImplementedError("This function needs to be implemented")
+        if not prompt_ids or not seq_ids or len(seq_ids) > len(prompt_ids):
+            return torch.empty(0, dtype=torch.long)
+
+        found_start = -1
+        for i in range(len(prompt_ids) - len(seq_ids) + 1):
+            if prompt_ids[i : i + len(seq_ids)] == seq_ids:
+                found_start = i
+                break
+
+        if found_start == -1:
+            return torch.empty(0, dtype=torch.long)
+
+        indices = list(range(found_start, found_start + len(seq_ids)))
+
+        return torch.tensor(indices, dtype=torch.long)
+
 
     def get_patch_emb_fn(self, corrupt_span: Tensor, noise: float = 1.) -> Callable:
         """
@@ -120,9 +166,52 @@ class TraceTransformer(HookedTransformer):
         Returns:
         Callable: A function that patches the embeddings with noise.
         """
+        def patch_fn(act: Tensor) -> Tensor:
+            if act.ndim < 2:
+                return act
+            
+            B, T = act.shape[0], act.shape[1]
+            device = act.device
 
-        ### YOUR CODE STARTS HERE
-        raise NotImplementedError("This function needs to be implemented")
+            span = corrupt_span.to(device)
+
+            # Case 1: already a boolean mask
+            if span.dtype == torch.bool:
+                if span.ndim < 2:
+                    mask_bt = span.unsqueeze(0).expand(B, -1)
+                elif span.ndim == 2:
+                    mask_bt = span
+
+            # Case 2: not a boolean mask
+            else:
+                if span.ndim < 2:
+                    mask = torch.zeros(T, dtype=torch.bool, device=device)
+                    if span.numel() > 0:
+                        idx = span.long().clamp(0, T - 1)
+                        mask[idx] = True
+                    mask_bt = mask.unsqueeze(0).expand(B, -1)
+
+                elif span.ndim == 2:
+                    mask = torch.zeros(B, T, dtype=torch.bool, device=device)
+                    for b in range(B):
+                        row = span[b]
+                        row = row[row >= 0].long() if (row.ndim == 1) else row.long()
+                        if row.numel() > 0:
+                            row = row
+                            mask[b, row] = True
+                    
+                    mask_bt = mask
+        
+            while mask_bt.ndim < act.ndim:
+                mask_bt = mask_bt.unsqueeze(-1)
+
+            if torch.is_float_point(act):
+                noise_tensor = torch.randn_like(act) * float(noise) 
+            
+            return act + noise_tensor * mask_bt
+
+        return patch_fn
+
 
     def get_restore_fn(self,
             activation_record: Dict[str, Tensor], token_idx: int) -> Callable:
@@ -136,9 +225,28 @@ class TraceTransformer(HookedTransformer):
         Returns:
         Callable: A function that restores the activations for the specified token.
         """
+        def restore_fn(patched: Tensor, original: Tensor) -> Tensor:
+            if patched.shape != original.shape:
+                return patched
+            
+            if patched.device != original.device:
+                patched = patched.to(original.device)
+            
+            if patched.dtype != original.dtype:
+                patched = patched.to(original.dtype)
+            
+            if patched.ndim < 2:
+                return patched
+            
+            B, T = patched.shape[0], patched.shape[1]
+            idx = max(0, min(token_idx, T - 1))
 
-        ### YOUR CODE STARTS HERE
-        raise NotImplementedError("This function needs to be implemented")
+            out = original.clone()
+            out[:, idx] = patched[:, idx]
+            return out
+
+        return restore_fn
+
 
     def get_forward_hooks(self, layer: int,
             patch_embed_fn: Callable, patch_name: str,
@@ -156,9 +264,62 @@ class TraceTransformer(HookedTransformer):
         Returns:
         List[Tuple[str, Callable]]: A list of tuples containing the hook names and functions.
         """
+        if patch_name not in {"resid_pre", "mlp_post", "attn_out"}:
+            raise ValueError(f"Unknown patch_name={patch_name}. "
+                            "Expected one of: 'resid_pre', 'mlp_post', 'attn_out'.")
 
-        ### YOUR CODE STARTS HERE
-        raise NotImplementedError("This function needs to be implemented")
+        hook_name = f"L{layer}.{patch_name}"
+
+        center_idx = getattr(self, "target_idx", None)
+
+        def _apply_window(orig: Tensor, repl: Tensor) -> Tensor:
+            """
+            Replace a [B, T, ...] slice around center_idx with repl’s slice.
+            If center_idx is None or tensor doesn't look like [B,T,...], replace all.
+            """
+            if orig.ndim < 2 or center_idx is None or window is None:
+                return repl 
+
+            B, T = orig.shape[0], orig.shape[1]
+            c = max(0, min(T - 1, int(center_idx)))
+            start = max(0, c - int(window))
+            end = min(T, c + int(window) + 1)
+
+            out = orig.clone()
+            out[:, start:end, ...] = repl[:, start:end, ...]
+            return out
+
+        def hook_fn(module, inputs, output):
+            """
+            Forward hook: intercept activation, patch with replacement from patch_embed_fn,
+            optionally window it, then call restore_fn(patched, original) and return.
+            """
+            is_tuple = isinstance(output, tuple)
+            act = output[0] if is_tuple else output
+
+            repl = patch_embed_fn(act)
+
+            if repl.shape != act.shape:
+                raise ValueError(f"{hook_name}: patch_embed_fn changed shape "
+                                f"{repl.shape} vs {act.shape}")
+            if repl.device != act.device:
+                repl = repl.to(act.device)
+            if repl.dtype != act.dtype:
+                repl = repl.to(act.dtype)
+
+            patched = _apply_window(act, repl)
+
+            if restore_fn is not None:
+                patched = restore_fn(patched, act)
+
+            if is_tuple:
+                out_list = list(output)
+                out_list[0] = patched
+                return tuple(out_list)
+            return patched
+
+        return [(hook_name, hook_fn)]
+    
 
     def causal_trace_analysis(self,
             prompt: str, source: str, target: str,
@@ -178,9 +339,78 @@ class TraceTransformer(HookedTransformer):
         Returns:
         torch.Tensor: A 2D tensor of shape (sequence_length - 1, n_layers) containing the causal tracing results.
         """
+        device = self.device
 
-        ### YOUR CODE STARTS HERE
-        raise NotImplementedError("This function needs to be implemented")
+        enc = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
+        input_ids = enc["input_ids"].to(device) 
+        seq_len = input_ids.size(1)
+
+        tgt_ids = self.tokenizer(target, add_special_tokens=False)["input_ids"]
+        if not tgt_ids:
+            raise ValueError(f"Could not tokenize target string: {target!r}")
+        target_id = tgt_ids[0]
+
+        span_idx = self.find_sequence_span(prompt, source)
+        if span_idx.numel() == 0:
+            raise ValueError(f"Source sequence {source!r} not found in prompt.")
+        patch_emb_corrupt = self.get_patch_emb_fn(span_idx, noise=noise)
+
+        probs_corrupt = self.get_corrupted_probs(prompt, patch_emb_corrupt).to(device)
+        base_corrupt_p = float(probs_corrupt[target_id])
+
+        activation_record: Dict[str, Tensor] = self.record_clean_activations(prompt)
+
+        n_layers = getattr(self.model.config, "num_hidden_layers", None)
+        if n_layers is None:
+            n_layers = len(getattr(self.model, "transformer", getattr(self.model, "layers")).h)
+        effects = torch.zeros(seq_len - 1, n_layers, device=device)
+
+        def _register_hooks(hooks: List[Tuple[str, Callable]]):
+            """Register hooks on modules referenced by self.hook_sites[hook_name]."""
+            handles = []
+            for hook_name, hook_fn in hooks:
+                if not hasattr(self, "hook_sites") or hook_name not in self.hook_sites:
+                    raise KeyError(f"Hook site {hook_name!r} not found in self.hook_sites; "
+                                f"ensure you mapped it to the correct module.")
+                handles.append(self.hook_sites[hook_name].register_forward_hook(hook_fn))
+            return handles
+
+        def _remove_hooks(handles):
+            for h in handles:
+                h.remove()
+
+        for pos in range(seq_len - 1):
+            restore_fn = self.get_restore_fn(activation_record, token_idx=pos)
+
+            for layer in range(n_layers):
+                hook_key = f"L{layer}.{patch_name}"
+                if hook_key not in activation_record:
+                    effects[pos, layer] = float("nan")
+                    continue
+
+                clean_act = activation_record[hook_key]
+
+                def patch_clean(act, _clean=clean_act):
+                    return _clean.to(act.device, dtype=act.dtype)
+
+                hooks = self.get_forward_hooks(
+                    layer=layer,
+                    patch_embed_fn=patch_clean,
+                    patch_name=patch_name,
+                    restore_fn=restore_fn,
+                    window=window
+                )
+
+                handles = _register_hooks(hooks)
+                try:
+                    probs_patched = self.get_corrupted_probs(prompt, patch_emb_corrupt).to(device)  # [V]
+                finally:
+                    _remove_hooks(handles)
+
+                p_patched = float(probs_patched[target_id])
+                effects[pos, layer] = p_patched - base_corrupt_p
+
+        return effects
 
 
 def run_causal_trace(model_name='gpt2-xl', patch_name='resid_pre',
